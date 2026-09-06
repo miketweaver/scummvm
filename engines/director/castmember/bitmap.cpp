@@ -552,11 +552,25 @@ bool BitmapCastMember::isModified() {
 
 void BitmapCastMember::createMatte(const Common::Rect &bbox) {
 	// Like background trans, but all white pixels NOT ENCLOSED by coloured pixels
-	// are transparent
-	Graphics::Surface tmp;
-	tmp.create(bbox.width(), bbox.height(), g_director->_pixelformat);
+	// are transparent.
+	//
+	// The matte has to be computed on the unscaled artwork and then stretched
+	// to the sprite's bounding box. This is what Director does: in the D4.0.4
+	// Windows player the matte is built once per cast member from the member's
+	// own PixMap at its own size (1-bit non-white mask, seed fill from (0,0),
+	// inverted, cached in the cast record) and the masked blit then stretches
+	// mask and pixels together to the sprite rect. If the flood fill is done
+	// after a nearest-neighbour downscale instead, pixels drop out of thin
+	// outlines and the fill leaks into enclosed white areas (e.g. the king's
+	// collar in the Pantsylvania intro).
+	Common::Rect nativeRect(_initialRect.width(), _initialRect.height());
+	if (nativeRect.isEmpty())
+		nativeRect = Common::Rect(bbox.width(), bbox.height());
 
-	copyStretchImg(&_picture->_surface, &tmp, _initialRect, bbox);
+	Graphics::Surface tmp;
+	tmp.create(nativeRect.width(), nativeRect.height(), g_director->_pixelformat);
+
+	copyStretchImg(&_picture->_surface, &tmp, _initialRect, nativeRect);
 
 	_noMatte = true;
 
@@ -614,12 +628,24 @@ void BitmapCastMember::createMatte(const Common::Rect &bbox) {
 		Graphics::Surface *matteSurf = matteFill.getMask();
 		// convert the mask to the same surface format used for 1bpp bitmaps.
 		// this uses the director palette scheme, so white is 0x00 and black is 0xff.
-		_matte = new Graphics::Surface();
-		_matte->create(matteSurf->w, matteSurf->h, Graphics::PixelFormat::createFormatCLUT8());
+		Graphics::Surface nativeMatte;
+		nativeMatte.create(matteSurf->w, matteSurf->h, Graphics::PixelFormat::createFormatCLUT8());
 		for (int y = 0; y < matteSurf->h; y++) {
 			for (int x = 0; x < matteSurf->w; x++) {
-				_matte->setPixel(x, y, matteSurf->getPixel(x, y) ? 0x00 : 0xff);
+				nativeMatte.setPixel(x, y, matteSurf->getPixel(x, y) ? 0x00 : 0xff);
 			}
+		}
+
+		// Stretch the matte to the sprite's bounding box with the same
+		// nearest-neighbour scaling used for the bitmap itself, so that the
+		// mask and the pixels line up.
+		if (nativeMatte.w != bbox.width() || nativeMatte.h != bbox.height()) {
+			_matte = nativeMatte.scale(bbox.width(), bbox.height(), false);
+			nativeMatte.free();
+		} else {
+			_matte = new Graphics::Surface();
+			_matte->copyFrom(nativeMatte);
+			nativeMatte.free();
 		}
 		_noMatte = false;
 	}
